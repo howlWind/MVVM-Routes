@@ -1,0 +1,267 @@
+1.添加路由组件化 JLRoutes
+```
+target 'MVVM+Routes' do
+  # Uncomment the next line if you're using Swift or would like to use dynamic frameworks
+  # use_frameworks!
+  # Pods for MVVM+Routes
+  # 路由组件化解耦
+  pod 'JLRoutes', '~> 2.0.5'
+  target 'MVVM+RoutesTests' do
+    inherit! :search_paths
+    # Pods for testing
+  end
+  target 'MVVM+RoutesUITests' do
+    inherit! :search_paths
+    # Pods for testing
+  end
+end
+```
+
+2.引入JLRoutes 头文件
+#import <JLRoutes/JLRoutes.h>
+
+3.创建JLRRouteDefinition 分类 
+.h
+```
+#import <JLRoutes/JLRoutes.h>
+
+
+#undef JLRGenRoute
+#define JLRGenRoute(Schema, path) \
+([NSString stringWithFormat: @"%@:/%@", \
+Schema, \
+path])
+
+#undef JLRGenRouteURL
+#define JLRGenRouteURL(Schema, path) \
+([NSURL URLWithString: \
+JLRGenRoute(Schema, path)])
+
+
+@interface JLRoutes (GenerateURL)
+
+/**
+ 避免 URL 散落各处， 集中生成URL
+ 
+ @param pattern 匹配模式
+ @param parameters 附带参数
+ @return URL字符串
+ */
++ (NSString *)fk_generateURLWithPattern:(NSString *)pattern parameters:(NSArray *)parameters;
+
+/**
+ 避免 URL 散落各处， 集中生成URL
+ 额外参数将被 ?key=value&key2=value2 样式给出
+ 
+ @param pattern 匹配模式
+ @param parameters 附加参数
+ @param extraParameters 额外参数
+ @return URL字符串
+ */
++ (NSString *)fk_generateURLWithPattern:(NSString *)pattern parameters:(NSArray *)parameters extraParameters:(NSDictionary *)extraParameters;
+
+/**
+ 解析NSURL对象中的请求参数
+ http://madao?param1=value1&param2=value2 解析成 @{param1:value1, param2:value2}
+ @param URL NSURL对象
+ @return URL字符串
+ */
++ (NSDictionary *)fk_parseParamsWithURL:(NSURL *)URL;
+
+/**
+ 将参数对象进行url编码
+ 将@{param1:value1, param2:value2} 转换成 ?param1=value1&param2=value2
+ @param dic 参数对象
+ @return URL字符串
+ */
++ (NSString *)fk_mapDictionaryToURLQueryString:(NSDictionary *)dic;
+
+@end
+```
+```
+.m
+#import "JLRoutes+GenerateURL.h"
+#import <JLRoutes/JLRRouteRequest.h>
+#import <JLRoutes/JLRRouteDefinition.h>
+
+@interface JLRRouteDefinition (kExtension)
+
+- (NSString *)variableNameForValue:(NSString *)value;
+- (NSString *)variableValueForValue:(NSString *)value decodePlusSymbols:(BOOL)decodePlusSymbols;
+
+@end
+
+@implementation JLRoutes (GenerateURL)
+
++ (NSString *)fk_generateURLWithPattern:(NSString *)pattern parameters:(NSArray *)parameters
+{
+    return [[self class] fk_generateURLWithPattern:pattern parameters:parameters extraParameters:nil];
+}
+
++ (NSString *)fk_generateURLWithPattern:(NSString *)pattern parameters:(NSArray *)parameters extraParameters:(NSDictionary *)extraParameters
+{
+    // 创建路由
+    JLRRouteDefinition *route = [[JLRRouteDefinition alloc] initWithScheme:@"" pattern:pattern priority:0 handlerBlock:nil];
+    
+    NSArray *patternComponents;
+    @try {
+        patternComponents = [route mutableArrayValueForKeyPath:@"patternComponents"];
+    } @catch (NSException *exception) {
+        return nil;
+    } @finally {
+    }
+    
+    NSUInteger index = 0;
+    NSMutableArray *routeValues = [NSMutableArray array];
+    for (NSString *patternComponent in patternComponents) {
+        
+        NSString *URLComponent = nil;
+        if (index < [parameters count]) {
+            URLComponent = parameters[index];
+        } else if ([patternComponent isEqualToString:@"*"]) {
+            // match /foo by /foo/*
+            URLComponent = [parameters lastObject];
+        }
+        
+        if ([patternComponent hasPrefix:@":"]) {
+            // 匹配到了一个值
+            @try {
+                NSString *variableValue = [route variableValueForValue:URLComponent decodePlusSymbols:NO];
+                [routeValues addObject:variableValue];
+            } @catch (NSException *exception) {}
+            index++;
+        }else if ([patternComponent isEqualToString:@"*"]){
+            // 模糊匹配
+            NSUInteger minRequiredParams = index;
+            if (parameters.count >= minRequiredParams) {
+                // match: /a/b/c/* has to be matched by at least /a/b/c
+                [routeValues addObjectsFromArray:[parameters subarrayWithRange:NSMakeRange(index, parameters.count - index)]];
+            }
+        }else
+        {
+            // 静态参数值
+            [routeValues addObject:patternComponent];
+        }
+    }
+    
+    if (routeValues && routeValues.count) {
+        
+        NSString *urlPath = [routeValues componentsJoinedByString:@"/"];
+        return [NSString stringWithFormat:@"/%@%@", urlPath, [self fk_mapDictionaryToURLQueryString:extraParameters]];
+    }
+    return nil;
+}
+
++ (NSDictionary *)fk_parseParamsWithURL:(NSURL *)URL
+{
+    NSString *parameterString = URL.query;
+    NSMutableDictionary *parameterDic = [NSMutableDictionary new];
+    if (parameterString && parameterString.length > 0) {
+        
+        NSArray *kvPart = [parameterString componentsSeparatedByString:@"&"];
+        for (NSString * kv in kvPart) {
+            
+            NSArray *kvArr = [kv componentsSeparatedByString:@"="];
+            if (kvArr.count == 2) {
+                
+                [parameterDic setObject:[kvArr lastObject] forKey:[kvArr firstObject]];
+            }
+        }
+        
+    }
+    return [NSDictionary dictionaryWithDictionary:parameterDic];
+}
+
++ (NSString *)fk_mapDictionaryToURLQueryString:(NSDictionary *)dic
+{
+    if (!dic) {
+        return @"";
+    }
+    NSURLComponents *components = [[NSURLComponents alloc] init];
+    NSMutableArray *queryItems = [NSMutableArray array];
+    
+    [dic enumerateKeysAndObjectsUsingBlock:^(id  _Nonnull key, id  _Nonnull obj, BOOL * _Nonnull stop) {
+        
+        NSString *queryKey = [NSString stringWithFormat:@"%@", key];
+        NSString *queryValue = [NSString stringWithFormat:@"%@", obj];
+        NSURLQueryItem *item = [NSURLQueryItem queryItemWithName:queryKey value:queryValue];
+        [queryItems addObject:item];
+    }];
+    components.queryItems = [queryItems copy];
+    
+    return components.URL.absoluteString;
+}
+@end
+```
+4.注册
+```
+#pragma mark - 普通的跳转路由注册
+
+NSString *const FKNavPushRoute = @"/com_madao_navPush/:viewController";
+NSString *const FKNavPresentRoute = @"/com_madao_navPresent/:viewController";
+NSString *const FKNavStoryBoardPushRoute = @"/com_madao_navStoryboardPush/:viewController";
+NSString *const FKComponentsCallBackRoute = @"/com_madao_callBack/*";
+
+- (void)registerNavgationRouter
+{
+    // push
+    // 路由 /com_madao_navPush/:viewController
+    [[JLRoutes globalRoutes] addRoute:FKNavPushRoute handler:^BOOL(NSDictionary<NSString *,id> * _Nonnull parameters) {
+        
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self _handlerSceneWithPresent:NO parameters:parameters];
+            
+        });
+        return YES;
+    }];
+    
+    // present
+    // 路由 /com_madao_navPresent/:viewController
+    [[JLRoutes globalRoutes] addRoute:FKNavPresentRoute handler:^BOOL(NSDictionary<NSString *,id> * _Nonnull parameters) {
+        
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self _handlerSceneWithPresent:YES parameters:parameters];
+            
+        });
+        return YES;
+    }];
+    
+    // sb push
+    // 路由 /com_madao_navStoryboardPush/:viewController
+    [[JLRoutes globalRoutes] addRoute:FKNavStoryBoardPushRoute handler:^BOOL(NSDictionary<NSString *,id> * _Nonnull parameters) {
+        
+        return YES;
+    }];
+    
+}
+
+#pragma mark - Schema 匹配
+- (void)registerSchemaRouter
+{
+    // HTTP注册
+    [[JLRoutes routesForScheme:FKHTTPRouteSchema] addRoute:@"/somethingHTTP" handler:^BOOL(NSDictionary<NSString *,id> * _Nonnull parameters) {
+        
+        return NO;
+    }];
+    
+    // HTTPS注册
+    [[JLRoutes routesForScheme:FKHTTPsRouteSchema] addRoute:@"/somethingHTTPs" handler:^BOOL(NSDictionary<NSString *,id> * _Nonnull parameters) {
+        return NO;
+        
+    }];
+    
+    // 自定义 Schema注册
+    [[JLRoutes routesForScheme:FKWebHandlerRouteSchema] addRoute:@"/somethingCustom" handler:^BOOL(NSDictionary<NSString *,id> * _Nonnull parameters) {
+        return NO;
+        
+    }];
+}
+```
+
+5.最后一步调用了
+```
+   NSString *router = [JLRoutes fk_generateURLWithPattern:FKNavPresentRoute parameters:@[NSStringFromClass(TestIngViewController.class)] extraParameters:nil];
+    NSURL *url = JLRGenRouteURL(FKDefaultRouteSchema, router);
+    [[JLRoutes globalRoutes] routeURL:url];
+```
+
